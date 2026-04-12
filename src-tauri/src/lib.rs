@@ -112,6 +112,19 @@ fn check_hooks_installed(state: tauri::State<'_, SharedConfig>) -> bool {
     hooks::check_hooks_installed(cfg.port)
 }
 
+#[tauri::command]
+fn check_hooks_status(state: tauri::State<'_, SharedConfig>) -> hooks::HookStatus {
+    let cfg = state.lock().unwrap_or_else(|e| e.into_inner());
+    hooks::check_hooks_status(cfg.port)
+}
+
+// ── Webhook test ────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn test_webhook(url: String, format: String) -> Result<String, String> {
+    webhooks::send_test(&url, &format).await
+}
+
 // ── Log persistence ──────────────────────────────────────────────────
 
 #[tauri::command]
@@ -178,6 +191,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(Mutex::new(SerialManager::new()) as SharedSerial)
         .manage(Mutex::new(app_config) as SharedConfig)
         .manage(Mutex::new(None::<u16>) as server::SharedServerPort)
@@ -192,6 +208,8 @@ pub fn run() {
             get_server_status,
             install_hooks,
             check_hooks_installed,
+            check_hooks_status,
+            test_webhook,
             load_log_history,
             append_log,
         ])
@@ -268,6 +286,23 @@ pub fn run() {
                 {
                     let _ = notif.request_permission();
                 }
+            }
+
+            // Register global hotkey (Ctrl+Shift+L)
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let _ = app.global_shortcut().on_shortcut("CmdOrCtrl+Shift+L", move |app_handle, _shortcut, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                });
             }
 
             // Start HTTP server with configured port

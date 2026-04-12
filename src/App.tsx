@@ -1,42 +1,31 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { save, open } from "@tauri-apps/plugin-dialog";
+import { writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
 
-interface LogEntry {
-  time: string;
-  message: string;
-  event?: string;
-}
+import type {
+  LogEntry,
+  AppConfig,
+  HookStatus,
+  WebhookConfig,
+  ColorConfig,
+  Toast,
+  ThemePref,
+} from "./types";
+import { DEFAULT_COLORS, ALL_EVENTS } from "./constants";
+import { playSoundForEvent } from "./sounds";
 
-interface ColorConfig {
-  r: number;
-  g: number;
-  b: number;
-}
-
-interface WebhookConfig {
-  name: string;
-  url: string;
-  enabled: boolean;
-  format: string;
-}
-
-interface AppConfig {
-  port: number;
-  start_minimized: boolean;
-  sound_enabled: boolean;
-  log_to_disk: boolean;
-  custom_colors: Record<string, ColorConfig>;
-  webhooks: WebhookConfig[];
-}
-
-interface Toast {
-  id: number;
-  message: string;
-  type: "success" | "error";
-}
-
-type ThemePref = "system" | "dark" | "light";
+import Header from "./components/Header";
+import TabBar from "./components/TabBar";
+import AboutPage from "./components/AboutPage";
+import SettingsPage from "./components/SettingsPage";
+import StatusBar from "./components/StatusBar";
+import SessionStats from "./components/SessionStats";
+import SerialPorts from "./components/SerialPorts";
+import TestLed from "./components/TestLed";
+import EventLog from "./components/EventLog";
+import ToastContainer from "./components/Toast";
 
 function getResolvedTheme(pref: ThemePref): "dark" | "light" {
   if (pref === "system") {
@@ -46,44 +35,6 @@ function getResolvedTheme(pref: ThemePref): "dark" | "light" {
   }
   return pref;
 }
-
-// Sound notification via Web Audio API — success melody (3-note ascending)
-function playSuccessMelody() {
-  try {
-    const ctx = new AudioContext();
-    const notes = [523, 659, 784]; // C5, E5, G5
-    const noteDuration = 0.12;
-    const gap = 0.04;
-
-    notes.forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = freq;
-      osc.type = "triangle";
-      const startTime = ctx.currentTime + i * (noteDuration + gap);
-      gain.gain.setValueAtTime(0, startTime);
-      gain.gain.linearRampToValueAtTime(0.18, startTime + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, startTime + noteDuration);
-      osc.start(startTime);
-      osc.stop(startTime + noteDuration);
-    });
-
-    const totalDuration = notes.length * (noteDuration + gap) * 1000 + 200;
-    setTimeout(() => ctx.close(), totalDuration);
-  } catch (_) {
-    /* Audio not available */
-  }
-}
-
-const DEFAULT_COLORS: Record<string, ColorConfig> = {
-  working: { r: 0, g: 255, b: 238 },
-  done: { r: 0, g: 180, b: 0 },
-  error: { r: 255, g: 0, b: 0 },
-  idle: { r: 30, g: 80, b: 220 },
-  thinking: { r: 255, g: 0, b: 180 },
-};
 
 let toastId = 0;
 
@@ -97,8 +48,9 @@ function App() {
   const [currentLedState, setCurrentLedState] = useState<string>("idle");
   const [serverPort, setServerPort] = useState<number | null>(null);
   const [serverFallback, setServerFallback] = useState(false);
-  const logRef = useRef<HTMLDivElement>(null);
+  const [logFilter, setLogFilter] = useState<string>("all");
   const selectedPortRef = useRef(selectedPort);
+  const idleTimerRef = useRef<number | null>(null);
 
   // Config
   const [config, setConfig] = useState<AppConfig>({
@@ -108,8 +60,21 @@ function App() {
     log_to_disk: true,
     custom_colors: {},
     webhooks: [],
+    idle_timeout_minutes: 5,
+    board_names: {},
+    sound_events: ["done"],
+    hotkey: null,
   });
-  const [hooksInstalled, setHooksInstalled] = useState(false);
+  const configRef = useRef(config);
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  const [hookStatus, setHookStatus] = useState<HookStatus>({
+    installed: false,
+    hook_port: null,
+    port_match: false,
+  });
   const [openSection, setOpenSection] = useState<string | null>("server");
 
   const toggleSection = (id: string) => {
@@ -129,7 +94,6 @@ function App() {
   useEffect(() => {
     localStorage.setItem("lumicode-theme", themePref);
     setResolvedTheme(getResolvedTheme(themePref));
-
     if (themePref === "system") {
       const mq = window.matchMedia("(prefers-color-scheme: dark)");
       const handler = () => setResolvedTheme(mq.matches ? "dark" : "light");
@@ -146,16 +110,7 @@ function App() {
     });
   };
 
-  const themeIcon =
-    themePref === "system" ? "◐" : themePref === "dark" ? "🌙" : "☀️";
-  const themeTooltip =
-    themePref === "system"
-      ? "Theme: System"
-      : themePref === "dark"
-        ? "Theme: Dark"
-        : "Theme: Light";
-
-  // Toast helpers
+  // Helpers
   const showToast = useCallback((message: string, type: "success" | "error") => {
     const id = ++toastId;
     setToasts((prev) => [...prev, { id, message, type }]);
@@ -164,15 +119,33 @@ function App() {
     }, 3000);
   }, []);
 
-  const addLog = useCallback((message: string, event?: string) => {
+  const addLog = useCallback((message: string, event?: string, skipPersist = false) => {
     const now = new Date();
     const time = now.toLocaleTimeString("en-US", { hour12: false });
-    setLogs((prev) => [...prev.slice(-100), { time, message, event }]);
+    const entry = { time, message, event, timestamp: now.toISOString() };
+    setLogs((prev) => [...prev.slice(-100), entry]);
+    if (!skipPersist && configRef.current.log_to_disk) {
+      invoke("append_log", { entry }).catch(() => {});
+    }
   }, []);
 
   useEffect(() => {
     selectedPortRef.current = selectedPort;
   }, [selectedPort]);
+
+  const resetIdleTimer = useCallback(() => {
+    if (idleTimerRef.current !== null) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+    const minutes = configRef.current.idle_timeout_minutes;
+    if (minutes > 0) {
+      idleTimerRef.current = window.setTimeout(() => {
+        invoke("send_led_command", { command: "idle" }).catch(() => {});
+        setCurrentLedState("idle");
+      }, minutes * 60 * 1000);
+    }
+  }, []);
 
   const refreshPorts = useCallback(async () => {
     try {
@@ -196,42 +169,43 @@ function App() {
       if (connected.length > 0 && !selectedPortRef.current) {
         setSelectedPort(connected[0]);
       }
-    } catch (_) {
-      /* ignore */
-    }
+    } catch (_) {}
   }, []);
 
-  // Load config on mount
+  // Load config & hooks on mount
   useEffect(() => {
-    invoke<AppConfig>("get_config").then((cfg) => {
-      setConfig(cfg);
-    }).catch(() => {});
-    invoke<boolean>("check_hooks_installed").then(setHooksInstalled).catch(() => {});
+    invoke<AppConfig>("get_config")
+      .then((cfg) => setConfig(cfg))
+      .catch(() => {});
+    invoke<HookStatus>("check_hooks_status")
+      .then(setHookStatus)
+      .catch(() => {});
   }, []);
 
   // Load persisted log history
   useEffect(() => {
-    invoke<LogEntry[]>("load_log_history").then((history) => {
-      if (history.length > 0) {
-        setLogs(history);
-      }
-    }).catch(() => {});
+    invoke<LogEntry[]>("load_log_history")
+      .then((history) => {
+        if (history.length > 0) setLogs(history);
+      })
+      .catch(() => {});
   }, []);
 
+  // Main event listeners
   useEffect(() => {
     refreshPorts();
     checkStatus();
-
     const statusInterval = setInterval(checkStatus, 3000);
 
     const unlistenHook = listen<{ event: string; message: string }>(
       "hook-event",
       (e) => {
-        addLog(e.payload.message, e.payload.event);
+        addLog(e.payload.message, e.payload.event, true);
         setCurrentLedState(e.payload.event);
-        // Play sound only on done event
-        if (config.sound_enabled && e.payload.event === "done") {
-          playSuccessMelody();
+        resetIdleTimer();
+        const cfg = configRef.current;
+        if (cfg.sound_enabled && cfg.sound_events.includes(e.payload.event)) {
+          playSoundForEvent(e.payload.event);
         }
       },
     );
@@ -247,10 +221,7 @@ function App() {
       message: string;
     }>("serial-status", (e) => {
       addLog(e.payload.message, e.payload.connected ? "done" : "error");
-      showToast(
-        e.payload.message,
-        e.payload.connected ? "success" : "error",
-      );
+      showToast(e.payload.message, e.payload.connected ? "success" : "error");
       checkStatus();
       refreshPorts();
     });
@@ -263,15 +234,12 @@ function App() {
     }>("server-status", (e) => {
       setServerPort(e.payload.port ?? null);
       setServerFallback(e.payload.fallback ?? false);
-      if (e.payload.error) {
-        addLog(`Server: ${e.payload.error}`, "error");
-      }
+      if (e.payload.error) addLog(`Server: ${e.payload.error}`, "error");
     });
 
-    // Check server status
-    invoke<number | null>("get_server_status").then((p) => {
-      setServerPort(p);
-    }).catch(() => {});
+    invoke<number | null>("get_server_status")
+      .then((p) => setServerPort(p))
+      .catch(() => {});
 
     return () => {
       clearInterval(statusInterval);
@@ -280,14 +248,9 @@ function App() {
       unlistenSerial.then((fn) => fn());
       unlistenServer.then((fn) => fn());
     };
-  }, [refreshPorts, addLog, checkStatus, showToast, config.sound_enabled]);
+  }, [refreshPorts, addLog, checkStatus, showToast, resetIdleTimer]);
 
-  useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [logs]);
-
+  // Commands
   const connectPort = async () => {
     if (!selectedPort) return;
     try {
@@ -314,27 +277,37 @@ function App() {
       await invoke("send_led_command", { command });
       addLog(`Sent: ${command}`, command);
       setCurrentLedState(command);
+      resetIdleTimer();
     } catch (e) {
       addLog(`Send failed: ${e}`);
     }
   };
 
   // Config helpers
-  const updateConfig = async (partial: Partial<AppConfig>) => {
-    const newConfig = { ...config, ...partial };
-    setConfig(newConfig);
-    try {
-      await invoke("save_config", { config: newConfig });
-    } catch (e) {
-      addLog(`Config save failed: ${e}`);
-    }
-  };
+  const saveTimerRef = useRef<number | null>(null);
+
+  const updateConfig = useCallback((partial: Partial<AppConfig>) => {
+    setConfig((prev) => {
+      const newConfig = { ...prev, ...partial };
+      configRef.current = newConfig;
+      if (saveTimerRef.current !== null) {
+        clearTimeout(saveTimerRef.current);
+      }
+      saveTimerRef.current = window.setTimeout(() => {
+        saveTimerRef.current = null;
+        invoke("save_config", { config: configRef.current }).catch((e) => {
+          addLog(`Config save failed: ${e}`);
+        });
+      }, 400);
+      return newConfig;
+    });
+  }, [addLog]);
 
   const handleInstallHooks = async () => {
     try {
       const result = await invoke<string>("install_hooks");
       addLog(result);
-      setHooksInstalled(true);
+      setHookStatus({ installed: true, hook_port: config.port, port_match: true });
       showToast("Hooks installed!", "success");
     } catch (e) {
       addLog(`Hook install failed: ${e}`);
@@ -348,6 +321,7 @@ function App() {
       url: "",
       enabled: true,
       format: "generic",
+      events: [...ALL_EVENTS],
     };
     updateConfig({ webhooks: [...config.webhooks, newWebhook] });
   };
@@ -363,14 +337,24 @@ function App() {
     updateConfig({ webhooks: config.webhooks.filter((_, i) => i !== index) });
   };
 
+  const testWebhook = async (wh: WebhookConfig) => {
+    try {
+      const result = await invoke<string>("test_webhook", {
+        url: wh.url,
+        format: wh.format,
+      });
+      showToast(`Test sent: ${result}`, "success");
+    } catch (e) {
+      showToast(`Test failed: ${e}`, "error");
+    }
+  };
+
   const getColorForEvent = (event: string): ColorConfig => {
     return config.custom_colors[event] || DEFAULT_COLORS[event] || { r: 128, g: 128, b: 128 };
   };
 
   const updateEventColor = (event: string, color: ColorConfig) => {
-    updateConfig({
-      custom_colors: { ...config.custom_colors, [event]: color },
-    });
+    updateConfig({ custom_colors: { ...config.custom_colors, [event]: color } });
   };
 
   const resetEventColor = (event: string) => {
@@ -379,10 +363,115 @@ function App() {
     updateConfig({ custom_colors: newColors });
   };
 
+  const getBoardName = (port: string): string => {
+    return config.board_names[port] || port;
+  };
+
+  const updateBoardName = (port: string, name: string) => {
+    updateConfig({ board_names: { ...config.board_names, [port]: name } });
+  };
+
+  const cleanStaleBoardNames = () => {
+    const activePorts = new Set([...connectedPorts, ...ports]);
+    const cleaned: Record<string, string> = {};
+    for (const [port, name] of Object.entries(config.board_names)) {
+      if (activePorts.has(port)) {
+        cleaned[port] = name;
+      }
+    }
+    const removed = Object.keys(config.board_names).length - Object.keys(cleaned).length;
+    if (removed > 0) {
+      updateConfig({ board_names: cleaned });
+      showToast(`Removed ${removed} stale name${removed > 1 ? "s" : ""}`, "success");
+    } else {
+      showToast("No stale names found", "success");
+    }
+  };
+
+  const toggleWebhookEvent = (index: number, event: string) => {
+    const wh = config.webhooks[index];
+    const events = wh.events.includes(event)
+      ? wh.events.filter((e) => e !== event)
+      : [...wh.events, event];
+    updateWebhook(index, { events });
+  };
+
+  const toggleSoundEvent = (event: string) => {
+    const events = config.sound_events.includes(event)
+      ? config.sound_events.filter((e) => e !== event)
+      : [...config.sound_events, event];
+    updateConfig({ sound_events: events });
+  };
+
+  const exportConfig = async () => {
+    try {
+      const cfg = await invoke<AppConfig>("get_config");
+      const filePath = await save({
+        defaultPath: "lumicode-config.json",
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!filePath) return;
+      await writeTextFile(filePath, JSON.stringify(cfg, null, 2));
+      showToast("Config exported", "success");
+    } catch (e) {
+      showToast(`Export failed: ${e}`, "error");
+    }
+  };
+
+  const importConfig = async () => {
+    try {
+      const filePath = await open({
+        filters: [{ name: "JSON", extensions: ["json"] }],
+        multiple: false,
+      });
+      if (!filePath) return;
+      const text = await readTextFile(filePath as string);
+      const parsed = JSON.parse(text) as AppConfig;
+      // Apply defaults for missing optional fields first
+      parsed.port = parsed.port ?? 9999;
+      parsed.idle_timeout_minutes = parsed.idle_timeout_minutes ?? 5;
+      parsed.start_minimized = parsed.start_minimized ?? false;
+      parsed.sound_enabled = parsed.sound_enabled ?? false;
+      parsed.log_to_disk = parsed.log_to_disk ?? true;
+      parsed.custom_colors = parsed.custom_colors ?? {};
+      parsed.webhooks = parsed.webhooks ?? [];
+      parsed.board_names = parsed.board_names ?? {};
+      parsed.sound_events = parsed.sound_events ?? ["done"];
+      parsed.hotkey = parsed.hotkey ?? null;
+      // Validate fields and ranges
+      if (typeof parsed.port !== "number" || parsed.port < 1024 || parsed.port > 65535)
+        throw new Error("Invalid config: port must be 1024-65535");
+      if (typeof parsed.idle_timeout_minutes !== "number" || parsed.idle_timeout_minutes < 0 || parsed.idle_timeout_minutes > 60)
+        throw new Error("Invalid config: idle_timeout_minutes must be 0-60");
+      if (typeof parsed.custom_colors === "object") {
+        for (const [key, c] of Object.entries(parsed.custom_colors)) {
+          if (typeof c.r !== "number" || typeof c.g !== "number" || typeof c.b !== "number" ||
+              c.r < 0 || c.r > 255 || c.g < 0 || c.g > 255 || c.b < 0 || c.b > 255)
+            throw new Error(`Invalid config: color "${key}" has out-of-range RGB values`);
+        }
+      }
+      if (!Array.isArray(parsed.webhooks))
+        throw new Error("Invalid config: webhooks must be an array");
+      if (!Array.isArray(parsed.sound_events))
+        throw new Error("Invalid config: sound_events must be an array");
+      // Cancel any pending debounced save before importing
+      if (saveTimerRef.current !== null) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      await invoke("save_config", { config: parsed });
+      setConfig(parsed);
+      configRef.current = parsed;
+      showToast("Config imported!", "success");
+    } catch (e) {
+      showToast(`Import failed: ${e}`, "error");
+    }
+  };
+
+  // Derived
   const isConnected = connectedPorts.length > 0;
   const availablePorts = ports.filter((p) => !connectedPorts.includes(p));
 
-  // Keep selectedPort in sync with available ports
   useEffect(() => {
     if (availablePorts.length > 0 && !availablePorts.includes(selectedPort)) {
       setSelectedPort(availablePorts[0]);
@@ -391,483 +480,75 @@ function App() {
     }
   }, [availablePorts.join(","), selectedPort]);
 
-  const ledButtons = [
-    { command: "working", label: "Working" },
-    { command: "done", label: "Done" },
-    { command: "error", label: "Error" },
-    { command: "idle", label: "Idle" },
-    { command: "thinking", label: "Thinking" },
-  ];
-
   return (
     <div className="app" data-theme={resolvedTheme} onContextMenu={(e) => e.preventDefault()}>
-      <div className="header">
-        <h1>LumiCode</h1>
-        <span className="version">v1.3.0</span>
-        <div className="header-spacer" />
-        <button
-          className="theme-toggle"
-          onClick={cycleTheme}
-          title={themeTooltip}
-        >
-          {themeIcon}
-        </button>
-      </div>
-
-      <div className="tab-bar">
-        <button
-          className={`tab ${page === "main" ? "active" : ""}`}
-          onClick={() => setPage("main")}
-        >
-          Home
-        </button>
-        <button
-          className={`tab ${page === "settings" ? "active" : ""}`}
-          onClick={() => setPage("settings")}
-        >
-          Settings
-        </button>
-        <button
-          className={`tab ${page === "about" ? "active" : ""}`}
-          onClick={() => setPage("about")}
-        >
-          About
-        </button>
-      </div>
+      <Header themePref={themePref} cycleTheme={cycleTheme} />
+      <TabBar page={page} setPage={setPage} />
 
       {page === "about" ? (
-        <div className="about-page">
-          <div className="about-icon">
-            <div className="about-ring">
-              <div className="about-dot" />
-            </div>
-          </div>
-          <h2 className="about-title">LumiCode</h2>
-          <p className="about-desc">Claude Code RGB Notifier</p>
-          <div className="about-divider" />
-          <div className="about-info">
-            <div className="about-row">
-              <span className="about-label">Author</span>
-              <span className="about-value">M.Alsouki</span>
-            </div>
-            <div className="about-row">
-              <span className="about-label">Version</span>
-              <span className="about-value">1.3.0</span>
-            </div>
-            <div className="about-row">
-              <span className="about-label">License</span>
-              <span className="about-value">MIT</span>
-            </div>
-          </div>
-        </div>
+        <AboutPage />
       ) : page === "settings" ? (
-        <div className="settings-page">
-          {/* Server & General */}
-          <div className="accordion">
-            <button
-              className={`accordion-header ${openSection === "server" ? "open" : ""}`}
-              onClick={() => toggleSection("server")}
-            >
-              <span className="accordion-arrow" />
-              <span>General</span>
-              <span className="accordion-badge">
-                {serverPort ? `:${serverPort}` : "offline"}
-              </span>
-            </button>
-            {openSection === "server" && (
-              <div className="accordion-body">
-                <div className="settings-row">
-                  <span className="settings-label">HTTP Port</span>
-                  <input
-                    type="number"
-                    className="settings-input"
-                    value={config.port}
-                    min={1024}
-                    max={65535}
-                    onChange={(e) =>
-                      updateConfig({ port: parseInt(e.target.value) || 9999 })
-                    }
-                  />
-                </div>
-                <div className="settings-row">
-                  <span className="settings-label">Start minimized</span>
-                  <label className="toggle">
-                    <input
-                      type="checkbox"
-                      checked={config.start_minimized}
-                      onChange={(e) =>
-                        updateConfig({ start_minimized: e.target.checked })
-                      }
-                    />
-                    <span className="toggle-slider" />
-                  </label>
-                </div>
-                <div className="settings-row">
-                  <span className="settings-label">Sound notifications</span>
-                  <label className="toggle">
-                    <input
-                      type="checkbox"
-                      checked={config.sound_enabled}
-                      onChange={(e) =>
-                        updateConfig({ sound_enabled: e.target.checked })
-                      }
-                    />
-                    <span className="toggle-slider" />
-                  </label>
-                </div>
-                <div className="settings-row">
-                  <span className="settings-label">Persist event log</span>
-                  <label className="toggle">
-                    <input
-                      type="checkbox"
-                      checked={config.log_to_disk}
-                      onChange={(e) =>
-                        updateConfig({ log_to_disk: e.target.checked })
-                      }
-                    />
-                    <span className="toggle-slider" />
-                  </label>
-                </div>
-                {config.port !== serverPort && serverPort && (
-                  <div className="settings-hint">Restart to apply new port</div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* LED Colors */}
-          <div className="accordion">
-            <button
-              className={`accordion-header ${openSection === "colors" ? "open" : ""}`}
-              onClick={() => toggleSection("colors")}
-            >
-              <span className="accordion-arrow" />
-              <span>LED Colors</span>
-              <div className="accordion-colors">
-                {ledButtons.map((btn) => {
-                  const c = getColorForEvent(btn.command);
-                  return (
-                    <span
-                      key={btn.command}
-                      className="accordion-color-dot"
-                      style={{ background: `rgb(${c.r},${c.g},${c.b})` }}
-                    />
-                  );
-                })}
-              </div>
-            </button>
-            {openSection === "colors" && (
-              <div className="accordion-body">
-                {ledButtons.map((btn) => {
-                  const color = getColorForEvent(btn.command);
-                  const isCustom = !!config.custom_colors[btn.command];
-                  const hex = `#${color.r.toString(16).padStart(2, "0")}${color.g.toString(16).padStart(2, "0")}${color.b.toString(16).padStart(2, "0")}`;
-                  return (
-                    <div key={btn.command} className="color-row">
-                      <span className="settings-label">{btn.label}</span>
-                      <span className="color-rgb-text">
-                        {color.r}, {color.g}, {color.b}
-                      </span>
-                      <input
-                        type="color"
-                        className="color-input"
-                        value={hex}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          updateEventColor(btn.command, {
-                            r: parseInt(v.slice(1, 3), 16),
-                            g: parseInt(v.slice(3, 5), 16),
-                            b: parseInt(v.slice(5, 7), 16),
-                          });
-                        }}
-                      />
-                      {isCustom && (
-                        <button
-                          className="btn-icon"
-                          onClick={() => resetEventColor(btn.command)}
-                          title="Reset to default"
-                        >
-                          ↺
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* Webhooks */}
-          <div className="accordion">
-            <button
-              className={`accordion-header ${openSection === "webhooks" ? "open" : ""}`}
-              onClick={() => toggleSection("webhooks")}
-            >
-              <span className="accordion-arrow" />
-              <span>Webhooks</span>
-              {config.webhooks.length > 0 && (
-                <span className="accordion-badge">
-                  {config.webhooks.filter((w) => w.enabled).length} active
-                </span>
-              )}
-            </button>
-            {openSection === "webhooks" && (
-              <div className="accordion-body">
-                {config.webhooks.map((wh, i) => (
-                  <div key={i} className="webhook-row">
-                    <div className="webhook-top">
-                      <input
-                        className="settings-input webhook-name"
-                        placeholder="Name"
-                        value={wh.name}
-                        onChange={(e) =>
-                          updateWebhook(i, { name: e.target.value })
-                        }
-                      />
-                      <input
-                        className="settings-input webhook-url"
-                        placeholder="https://..."
-                        value={wh.url}
-                        onChange={(e) =>
-                          updateWebhook(i, { url: e.target.value })
-                        }
-                      />
-                    </div>
-                    <div className="webhook-bottom">
-                      <select
-                        className="settings-select"
-                        value={wh.format}
-                        onChange={(e) =>
-                          updateWebhook(i, { format: e.target.value })
-                        }
-                      >
-                        <option value="generic">Generic</option>
-                        <option value="discord">Discord</option>
-                        <option value="slack">Slack</option>
-                        <option value="homeassistant">Home Assistant</option>
-                      </select>
-                      <label className="toggle toggle-sm">
-                        <input
-                          type="checkbox"
-                          checked={wh.enabled}
-                          onChange={(e) =>
-                            updateWebhook(i, { enabled: e.target.checked })
-                          }
-                        />
-                        <span className="toggle-slider" />
-                      </label>
-                      <button
-                        className="btn-icon btn-danger"
-                        onClick={() => removeWebhook(i)}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                <button className="btn btn-sm" onClick={addWebhook}>
-                  + Add Webhook
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Claude Code Hooks */}
-          <div className="accordion">
-            <button
-              className={`accordion-header ${openSection === "hooks" ? "open" : ""}`}
-              onClick={() => toggleSection("hooks")}
-            >
-              <span className="accordion-arrow" />
-              <span>Claude Code Hooks</span>
-              <span className={`accordion-badge ${hooksInstalled ? "badge-ok" : "badge-warn"}`}>
-                {hooksInstalled ? "installed" : "not set"}
-              </span>
-            </button>
-            {openSection === "hooks" && (
-              <div className="accordion-body">
-                <div className="settings-row">
-                  <span className="settings-label">
-                    {hooksInstalled
-                      ? `Installed on :${config.port}`
-                      : "Not installed"}
-                  </span>
-                  <button
-                    className="btn btn-sm primary"
-                    onClick={handleInstallHooks}
-                  >
-                    {hooksInstalled ? "Reinstall" : "Install"}
-                  </button>
-                </div>
-                <div className="settings-hint">
-                  Writes hooks to ~/.claude/settings.json
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+        <SettingsPage
+          config={config}
+          updateConfig={updateConfig}
+          openSection={openSection}
+          toggleSection={toggleSection}
+          serverPort={serverPort}
+          hookStatus={hookStatus}
+          handleInstallHooks={handleInstallHooks}
+          getColorForEvent={getColorForEvent}
+          updateEventColor={updateEventColor}
+          resetEventColor={resetEventColor}
+          addWebhook={addWebhook}
+          updateWebhook={updateWebhook}
+          removeWebhook={removeWebhook}
+          testWebhook={testWebhook}
+          toggleWebhookEvent={toggleWebhookEvent}
+          toggleSoundEvent={toggleSoundEvent}
+          themePref={themePref}
+          setThemePref={setThemePref}
+          exportConfig={exportConfig}
+          importConfig={importConfig}
+        />
       ) : (
         <>
-          <div className="status-bar">
-            {(() => {
-              const c = getColorForEvent(currentLedState);
-              const rgb = `rgb(${c.r}, ${c.g}, ${c.b})`;
-              const glow = `0 0 12px rgba(${c.r}, ${c.g}, ${c.b}, 0.6)`;
-              const animClass =
-                currentLedState === "error" ? "led-anim-blink-fast" :
-                currentLedState === "working" ? "led-anim-blink-slow" :
-                currentLedState === "thinking" ? "led-anim-pulse" : "";
-              return (
-                <div
-                  className={`led-preview ${animClass}`}
-                  style={{ background: rgb, boxShadow: glow }}
-                />
-              );
-            })()}
-            <div className="status-info">
-              <div className="status-row">
-                <div
-                  className={`status-dot ${isConnected ? "connected" : "disconnected"}`}
-                />
-                <span className="status-text">
-                  <span className="label">Arduino: </span>
-                  {isConnected
-                    ? connectedPorts.join(", ")
-                    : "Scanning..."}
-                </span>
-              </div>
-              <div className="status-row">
-                <div
-                  className={`status-dot ${serverPort ? "connected" : "disconnected"}`}
-                />
-                <span className="status-text">
-                  <span className="label">Server: </span>
-                  {serverPort
-                    ? `:${serverPort}${serverFallback ? " (fallback)" : ""}`
-                    : "Not running"}
-                </span>
-              </div>
-            </div>
+          <div className="home-top-bar">
+            <StatusBar
+              currentLedState={currentLedState}
+              getColorForEvent={getColorForEvent}
+              isConnected={isConnected}
+              connectedPorts={connectedPorts}
+              serverPort={serverPort}
+              serverFallback={serverFallback}
+              getBoardName={getBoardName}
+            />
+            <SessionStats logs={logs} />
           </div>
-
-          <div className="section">
-            <div className="section-title">Serial Ports</div>
-            {/* Connected boards */}
-            {connectedPorts.map((port) => (
-              <div key={port} className="port-connected">
-                <div className="status-dot connected" />
-                <span className="port-name">{port}</span>
-                <button
-                  className="btn btn-sm"
-                  onClick={() => disconnectPort(port)}
-                >
-                  Disconnect
-                </button>
-              </div>
-            ))}
-            {/* Add new connection */}
-            <div className="port-select">
-              <select
-                value={selectedPort}
-                onChange={(e) => setSelectedPort(e.target.value)}
-              >
-                {availablePorts.length === 0 && (
-                  <option value="">No ports available</option>
-                )}
-                {availablePorts.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-              <button className="btn" onClick={refreshPorts}>
-                Refresh
-              </button>
-              <button
-                className="btn primary"
-                onClick={connectPort}
-                disabled={
-                  !selectedPort || connectedPorts.includes(selectedPort)
-                }
-              >
-                Connect
-              </button>
-            </div>
-          </div>
-
-          <div className="section">
-            <div className="section-title">Test LED</div>
-            <div className="led-grid">
-              {ledButtons.map((btn) => {
-                const c = getColorForEvent(btn.command);
-                return (
-                  <button
-                    key={btn.command}
-                    className="led-btn"
-                    onClick={() => sendCommand(btn.command)}
-                  >
-                    <div
-                      className="dot"
-                      style={{
-                        background: `rgb(${c.r}, ${c.g}, ${c.b})`,
-                        boxShadow: `0 0 10px rgba(${c.r}, ${c.g}, ${c.b}, 0.5)`,
-                      }}
-                    />
-                    {btn.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="log-section">
-            <div className="log-header">
-              <div className="section-title">Event Log</div>
-              {logs.length > 0 && (
-                <button
-                  className="btn btn-sm"
-                  onClick={() => setLogs([])}
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-            <div className="log" ref={logRef}>
-              {logs.map((entry, i) => {
-                const logColor = entry.event
-                  ? getColorForEvent(entry.event)
-                  : null;
-                return (
-                <div
-                  key={i}
-                  className="log-entry"
-                  style={
-                    logColor
-                      ? { color: `rgb(${logColor.r}, ${logColor.g}, ${logColor.b})` }
-                      : undefined
-                  }
-                >
-                  <span className="time">{entry.time}</span>
-                  {entry.message}
-                </div>
-                );
-              })}
-              {logs.length === 0 && (
-                <div className="log-entry">Waiting for events...</div>
-              )}
-            </div>
-          </div>
+          <SerialPorts
+            connectedPorts={connectedPorts}
+            availablePorts={availablePorts}
+            selectedPort={selectedPort}
+            setSelectedPort={setSelectedPort}
+            connectPort={connectPort}
+            disconnectPort={disconnectPort}
+            refreshPorts={refreshPorts}
+            config={config}
+            updateBoardName={updateBoardName}
+            updateConfig={updateConfig}
+            cleanStaleBoardNames={cleanStaleBoardNames}
+          />
+          <TestLed getColorForEvent={getColorForEvent} sendCommand={sendCommand} />
+          <EventLog
+            logs={logs}
+            setLogs={setLogs}
+            getColorForEvent={getColorForEvent}
+            logFilter={logFilter}
+            setLogFilter={setLogFilter}
+          />
         </>
       )}
 
-      {/* Toast container */}
-      <div className="toast-container">
-        {toasts.map((toast) => (
-          <div key={toast.id} className={`toast toast-${toast.type}`}>
-            {toast.message}
-          </div>
-        ))}
-      </div>
+      <ToastContainer toasts={toasts} />
     </div>
   );
 }

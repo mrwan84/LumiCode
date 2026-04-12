@@ -9,6 +9,11 @@
     "notification:allow-notify",
     "notification:allow-is-permission-granted",
     "notification:allow-request-permission",
-    "shell:default"
+    "shell:default",
+    "global-shortcut:default",
+    "dialog:default",
+    "fs:default",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file"
   ]
 }

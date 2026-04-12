@@ -17,6 +17,18 @@ pub struct WebhookConfig {
     pub url: String,
     pub enabled: bool,
     pub format: WebhookFormat,
+    #[serde(default = "default_all_events")]
+    pub events: Vec<String>,
+}
+
+fn default_all_events() -> Vec<String> {
+    vec![
+        "working".into(),
+        "done".into(),
+        "error".into(),
+        "idle".into(),
+        "thinking".into(),
+    ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +55,22 @@ pub struct AppConfig {
     pub custom_colors: HashMap<String, ColorConfig>,
     #[serde(default)]
     pub webhooks: Vec<WebhookConfig>,
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_minutes: u32,
+    #[serde(default)]
+    pub board_names: HashMap<String, String>,
+    #[serde(default = "default_sound_events")]
+    pub sound_events: Vec<String>,
+    #[serde(default)]
+    pub hotkey: Option<String>,
+}
+
+fn default_idle_timeout() -> u32 {
+    5
+}
+
+fn default_sound_events() -> Vec<String> {
+    vec!["done".into()]
 }
 
 fn default_port() -> u16 {
@@ -62,6 +90,10 @@ impl Default for AppConfig {
             log_to_disk: true,
             custom_colors: HashMap::new(),
             webhooks: Vec::new(),
+            idle_timeout_minutes: 5,
+            board_names: HashMap::new(),
+            sound_events: vec!["done".into()],
+            hotkey: None,
         }
     }
 }

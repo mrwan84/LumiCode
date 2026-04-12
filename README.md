@@ -157,7 +157,7 @@ Add the following hooks to your Claude Code settings file (`~/.claude/settings.j
 
 ### Merging with existing settings
 
-If you already have other settings in `settings.json`, merge the `hooks` key into your existing file.
+The automatic installer merges LumiCode hooks into your existing `settings.json` without overwriting other hooks you may have configured.
 
 ## Settings
 
@@ -189,10 +189,11 @@ Forward events to external services. Supported formats:
 
 ### API Endpoints
 
-| Method | Endpoint  | Description             |
-| ------ | --------- | ----------------------- |
-| GET    | `/health` | Check if app is running |
-| POST   | `/hook`   | Send event to LumiCode  |
+| Method | Endpoint  | Description                                      |
+| ------ | --------- | ------------------------------------------------ |
+| GET    | `/health` | Check if app is running                          |
+| GET    | `/status` | Get current state (last event, boards, uptime)   |
+| POST   | `/hook`   | Send event to LumiCode                           |
 
 #### POST `/hook` body
 
@@ -232,6 +233,38 @@ Right-click the tray icon:
 Clicking the X button hides the window to tray. The app keeps running in the background.
 
 ## Version History
+
+### v1.5.0
+
+- **Bug fix: webhook event filter** — unchecking all events on a webhook no longer sends all events (previously empty events list was treated as "subscribe to all")
+- **Bug fix: phantom serial entry** — `list_connected` no longer returns a fake disconnected entry when no boards are connected
+- **Safe hook installation** — hook installer now merges LumiCode hooks into existing `~/.claude/settings.json` instead of overwriting all hooks
+- **Config import validation** — validates port range, idle timeout, RGB color values, and array types before applying imported config
+- **Frontend log persistence** — connection events, manual LED commands, and other frontend actions are now persisted to the event log on disk
+- **Idle sound** — added a gentle 330Hz tone for idle events so the idle sound checkbox in settings now works
+- **Debounced config saves** — settings changes are batched with a 400ms debounce to reduce disk writes during rapid changes like color picking
+- **Webhook retry** — failed webhook deliveries (network error or 5xx) are retried once after a 2-second delay
+- **Stale board name cleanup** — "Clean Names" button in Serial Ports removes saved names for ports that are no longer detected
+- **Faster auto-detect** — reduced Arduino reset wait from 2s to 1.5s and pong read timeout from 2s to 500ms, with early exit when no USB ports are found
+
+### v1.4.0
+
+- **Idle timeout** — auto-sends `idle` to LED after N minutes of no events (default 5, configurable)
+- **Per-board naming** — label connected Arduinos with custom names (e.g., "Desk LED") in Serial Ports section
+- **Event filtering in log** — dropdown to filter event log by type (All/Working/Done/Error/Idle/Thinking)
+- **Theme toggle in Settings** — explicit System/Light/Dark theme selector in General settings
+- **Webhook test button** — send a test event to each webhook to verify Discord/Slack/HA setup
+- **Config export/import** — export and import settings as JSON files via native file dialogs
+- **Hook health check** — detects port mismatch between installed hooks and configured port, shows warning
+- **Event-specific webhook filtering** — choose which events (W/D/E/I/T) each webhook forwards
+- **Custom sound per event** — error gets descending melody, working/thinking get a short beep (configurable per event)
+- **Global hotkey** — `Ctrl+Shift+L` toggles window visibility from anywhere
+- **Session stats** — tasks completed today, errors today, and average thinking-to-done time on the Home tab
+- **REST API expansion** — new `GET /status` endpoint returns last event, connected boards, uptime, and server port
+- **Compact layout redesign** — dual-column settings rows, tighter spacing, side-by-side status bar and session stats on Home tab
+- **Component extraction** — App.tsx split into 12+ components (Header, TabBar, StatusBar, SessionStats, SerialPorts, TestLed, EventLog, SettingsPage, AboutPage, Toast, ErrorBoundary)
+- **Error boundary** — React error boundary wraps the app with a crash recovery screen
+- Shared types, constants, and sounds extracted into separate modules
 
 ### v1.3.0
 

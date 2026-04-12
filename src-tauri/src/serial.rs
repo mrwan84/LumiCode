@@ -97,15 +97,21 @@ impl SerialConnection {
     pub fn auto_detect() -> Option<(String, Box<dyn SerialPort>)> {
         let ports = serialport::available_ports().unwrap_or_default();
 
-        for port_info in ports {
-            if !matches!(port_info.port_type, SerialPortType::UsbPort(_)) {
-                continue;
-            }
+        // Filter to USB ports only, skip non-USB early
+        let usb_ports: Vec<_> = ports
+            .into_iter()
+            .filter(|p| matches!(p.port_type, SerialPortType::UsbPort(_)))
+            .collect();
 
+        if usb_ports.is_empty() {
+            return None;
+        }
+
+        for port_info in usb_ports {
             let name = &port_info.port_name;
 
             let port = serialport::new(name, 9600)
-                .timeout(Duration::from_millis(2000))
+                .timeout(Duration::from_millis(1000))
                 .open();
 
             let mut port = match port {
@@ -113,13 +119,16 @@ impl SerialConnection {
                 Err(_) => continue,
             };
 
-            std::thread::sleep(Duration::from_millis(2000));
+            // Wait for Arduino bootloader reset (needed after port open)
+            std::thread::sleep(Duration::from_millis(1500));
 
             if port.write_all(b"LUMICODE_PING\n").is_err() {
                 continue;
             }
             let _ = port.flush();
 
+            // Set a tight read timeout for the pong response
+            let _ = port.set_timeout(Duration::from_millis(500));
             let mut reader = BufReader::new(&mut port);
             let mut line = String::new();
             if let Ok(n) = reader.read_line(&mut line) {
@@ -207,9 +216,6 @@ impl SerialManager {
     }
 
     pub fn list_connected(&self) -> Vec<(bool, String)> {
-        if self.connections.is_empty() {
-            return vec![(false, String::new())];
-        }
         self.connections
             .iter()
             .map(|c| (c.is_connected(), c.port_name().to_string()))

@@ -21,18 +21,27 @@ pub struct HookPayload {
 
 struct ServerState {
     app: AppHandle,
+    last_event: Mutex<Option<String>>,
+    last_event_time: Mutex<Option<chrono::DateTime<chrono::Local>>>,
+    start_time: chrono::DateTime<chrono::Local>,
 }
 
 pub type SharedServerPort = Mutex<Option<u16>>;
 
 pub fn start_server(app: AppHandle, port: u16) {
-    let state = Arc::new(ServerState { app: app.clone() });
+    let state = Arc::new(ServerState {
+        app: app.clone(),
+        last_event: Mutex::new(None),
+        last_event_time: Mutex::new(None),
+        start_time: chrono::Local::now(),
+    });
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
         rt.block_on(async move {
             let router = Router::new()
                 .route("/health", get(health))
+                .route("/status", get(status_handler))
                 .route("/hook", post(handle_hook))
                 .with_state(state);
 
@@ -100,6 +109,41 @@ async fn health() -> &'static str {
     "LumiCode is running"
 }
 
+async fn status_handler(
+    State(state): State<Arc<ServerState>>,
+) -> impl IntoResponse {
+    let last_event = state.last_event.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let last_event_time = state.last_event_time.lock().unwrap_or_else(|e| e.into_inner())
+        .map(|t| t.to_rfc3339());
+    let uptime_secs = (chrono::Local::now() - state.start_time).num_seconds();
+
+    // Get connected boards
+    let serial = state.app.state::<SharedSerial>();
+    let boards: Vec<String> = {
+        let mgr = serial.lock().unwrap_or_else(|e| e.into_inner());
+        mgr.list_connected()
+            .into_iter()
+            .filter(|(connected, _)| *connected)
+            .map(|(_, name)| name)
+            .collect()
+    };
+
+    // Get server port
+    let server_port = {
+        let port_state = state.app.state::<SharedServerPort>();
+        let p = port_state.lock().unwrap_or_else(|e| e.into_inner());
+        *p
+    };
+
+    Json(serde_json::json!({
+        "last_event": last_event,
+        "last_event_time": last_event_time,
+        "connected_boards": boards,
+        "uptime_secs": uptime_secs,
+        "server_port": server_port,
+    }))
+}
+
 async fn handle_hook(
     State(state): State<Arc<ServerState>>,
     Json(payload): Json<HookPayload>,
@@ -114,6 +158,16 @@ async fn handle_hook(
         "thinking" => ("LumiCode", "Claude Code — Thinking..."),
         _ => ("LumiCode", "Unknown event received."),
     };
+
+    // Update last event tracking
+    {
+        let mut le = state.last_event.lock().unwrap_or_else(|e| e.into_inner());
+        *le = Some(event.clone());
+    }
+    {
+        let mut lt = state.last_event_time.lock().unwrap_or_else(|e| e.into_inner());
+        *lt = Some(chrono::Local::now());
+    }
 
     // Send native notification ONLY for "done" event
     if event == "done" {
@@ -177,17 +231,24 @@ async fn handle_hook(
         }
     }
 
-    // Forward to webhooks (fire-and-forget)
+    // Forward to webhooks (fire-and-forget), filtered by event
     {
         let config = state.app.state::<SharedConfig>();
         let cfg = config.lock().unwrap_or_else(|e| e.into_inner());
         if !cfg.webhooks.is_empty() {
-            let webhook_list = cfg.webhooks.clone();
-            let event_clone = event.clone();
-            let body_str = body.to_string();
-            tokio::spawn(async move {
-                webhooks::forward_event(&webhook_list, &event_clone, &body_str).await;
-            });
+            let webhook_list: Vec<_> = cfg
+                .webhooks
+                .iter()
+                .filter(|w| w.events.contains(&event))
+                .cloned()
+                .collect();
+            if !webhook_list.is_empty() {
+                let event_clone = event.clone();
+                let body_str = body.to_string();
+                tokio::spawn(async move {
+                    webhooks::forward_event(&webhook_list, &event_clone, &body_str).await;
+                });
+            }
         }
     }
 
