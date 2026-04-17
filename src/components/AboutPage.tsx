@@ -16,7 +16,7 @@ export default function AboutPage() {
         </div>
         <div className="about-row">
           <span className="about-label">Version</span>
-          <span className="about-value">1.5.0</span>
+          <span className="about-value">1.5.1</span>
         </div>
         <div className="about-row">
           <span className="about-label">License</span>

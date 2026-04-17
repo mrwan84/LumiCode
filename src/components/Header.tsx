@@ -17,7 +17,7 @@ export default function Header({ themePref, cycleTheme }: Props) {
   return (
     <div className="header">
       <h1>LumiCode</h1>
-      <span className="version">v1.5.0</span>
+      <span className="version">v1.5.1</span>
       <div className="header-spacer" />
       <button className="theme-toggle" onClick={cycleTheme} title={tooltip}>
         {icon}

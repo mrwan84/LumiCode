@@ -33,7 +33,6 @@ pub fn install_hooks(port: u16) -> Result<String, String> {
         "curl -s --fail -X POST http://localhost:{}/hook -H \"Content-Type: application/json\"",
         port
     );
-    let error_suffix = " || echo \"ERROR: LumiCode is not running\"";
 
     let make_hook = |event: &str| -> Value {
         json!([{
@@ -41,8 +40,8 @@ pub fn install_hooks(port: u16) -> Result<String, String> {
             "hooks": [{
                 "type": "command",
                 "command": format!(
-                    "{} -d \"{{\\\"event\\\": \\\"{}\\\"}}\"{}",
-                    base_cmd, event, error_suffix
+                    "{} -d \"{{\\\"event\\\": \\\"{}\\\"}}\"",
+                    base_cmd, event
                 )
             }]
         }])

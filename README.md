@@ -102,7 +102,7 @@ Add the following hooks to your Claude Code settings file (`~/.claude/settings.j
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --fail -X POST http://localhost:9999/hook -H \"Content-Type: application/json\" -d \"{\\\"event\\\": \\\"thinking\\\"}\" || echo \"ERROR: LumiCode is not running\""
+            "command": "curl -s --fail -X POST http://localhost:9999/hook -H \"Content-Type: application/json\" -d \"{\\\"event\\\": \\\"thinking\\\"}\""
           }
         ]
       }
@@ -113,7 +113,7 @@ Add the following hooks to your Claude Code settings file (`~/.claude/settings.j
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --fail -X POST http://localhost:9999/hook -H \"Content-Type: application/json\" -d \"{\\\"event\\\": \\\"working\\\"}\" || echo \"ERROR: LumiCode is not running\""
+            "command": "curl -s --fail -X POST http://localhost:9999/hook -H \"Content-Type: application/json\" -d \"{\\\"event\\\": \\\"working\\\"}\""
           }
         ]
       }
@@ -124,7 +124,7 @@ Add the following hooks to your Claude Code settings file (`~/.claude/settings.j
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --fail -X POST http://localhost:9999/hook -H \"Content-Type: application/json\" -d \"{\\\"event\\\": \\\"done\\\"}\" || echo \"ERROR: LumiCode is not running\""
+            "command": "curl -s --fail -X POST http://localhost:9999/hook -H \"Content-Type: application/json\" -d \"{\\\"event\\\": \\\"done\\\"}\""
           }
         ]
       }
@@ -135,7 +135,7 @@ Add the following hooks to your Claude Code settings file (`~/.claude/settings.j
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --fail -X POST http://localhost:9999/hook -H \"Content-Type: application/json\" -d \"{\\\"event\\\": \\\"done\\\"}\" || echo \"ERROR: LumiCode is not running\""
+            "command": "curl -s --fail -X POST http://localhost:9999/hook -H \"Content-Type: application/json\" -d \"{\\\"event\\\": \\\"done\\\"}\""
           }
         ]
       }
@@ -233,6 +233,11 @@ Right-click the tray icon:
 Clicking the X button hides the window to tray. The app keeps running in the background.
 
 ## Version History
+
+### v1.5.1
+
+- **Cleaner hook install** — hook installer no longer writes `|| echo "ERROR: LumiCode is not running"` fallbacks into `~/.claude/settings.json`; hooks now fail silently when LumiCode isn't running
+- **Version bump** — header badge and About page updated to 1.5.1
 
 ### v1.5.0
 
