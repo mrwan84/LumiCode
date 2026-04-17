@@ -82,16 +82,17 @@ pub fn start_server(app: AppHandle, port: u16) {
                         break;
                     }
                     Err(e) => {
-                        eprintln!(
-                            "LumiCode: Failed to bind to port {}: {}",
-                            try_port, e
-                        );
+                        eprintln!("LumiCode: Failed to bind to port {}: {}", try_port, e);
                     }
                 }
             }
 
             if bound_port.is_none() {
-                eprintln!("LumiCode: Could not bind to any port ({}-{})", port, port + 2);
+                eprintln!(
+                    "LumiCode: Could not bind to any port ({}-{})",
+                    port,
+                    port + 2
+                );
                 let _ = app.emit(
                     "server-status",
                     serde_json::json!({
@@ -109,11 +110,16 @@ async fn health() -> &'static str {
     "LumiCode is running"
 }
 
-async fn status_handler(
-    State(state): State<Arc<ServerState>>,
-) -> impl IntoResponse {
-    let last_event = state.last_event.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let last_event_time = state.last_event_time.lock().unwrap_or_else(|e| e.into_inner())
+async fn status_handler(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+    let last_event = state
+        .last_event
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let last_event_time = state
+        .last_event_time
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .map(|t| t.to_rfc3339());
     let uptime_secs = (chrono::Local::now() - state.start_time).num_seconds();
 
@@ -144,11 +150,63 @@ async fn status_handler(
     }))
 }
 
+/// Decide whether the incoming event should be dropped as a near-duplicate.
+/// Pure function — no I/O — for easy testing.
+pub fn should_coalesce(
+    prev_event: Option<&str>,
+    prev_time: Option<chrono::DateTime<chrono::Local>>,
+    current_event: &str,
+    now: chrono::DateTime<chrono::Local>,
+    window_ms: u64,
+) -> bool {
+    if window_ms == 0 {
+        return false;
+    }
+    let (Some(pe), Some(pt)) = (prev_event, prev_time) else {
+        return false;
+    };
+    if pe != current_event {
+        return false;
+    }
+    let elapsed_ms = (now - pt).num_milliseconds().max(0) as u64;
+    elapsed_ms < window_ms
+}
+
 async fn handle_hook(
     State(state): State<Arc<ServerState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
     let event = payload.event.to_lowercase();
+
+    // ── Coalescing: drop identical consecutive events within the
+    //    configured window so rapid tool-call bursts don't thrash the LED
+    //    or spam webhooks/logs. Still refreshes last_event_time so the
+    //    "Last event Ns ago" indicator stays accurate.
+    let coalesce_ms = state
+        .app
+        .state::<SharedConfig>()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .coalesce_ms;
+    {
+        let now = chrono::Local::now();
+        let prev_event = state
+            .last_event
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let prev_time = *state
+            .last_event_time
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if should_coalesce(prev_event.as_deref(), prev_time, &event, now, coalesce_ms) {
+            *state
+                .last_event_time
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(now);
+            return (StatusCode::OK, format!("coalesced: {}", event));
+        }
+    }
 
     let (title, body) = match event.as_str() {
         "working" => ("LumiCode", "Claude Code — Task is running..."),
@@ -165,7 +223,10 @@ async fn handle_hook(
         *le = Some(event.clone());
     }
     {
-        let mut lt = state.last_event_time.lock().unwrap_or_else(|e| e.into_inner());
+        let mut lt = state
+            .last_event_time
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *lt = Some(chrono::Local::now());
     }
 
@@ -283,4 +344,72 @@ fn append_log_to_file(path: &std::path::Path, entry: &serde_json::Value) -> Resu
     let line = serde_json::to_string(entry).map_err(|e| format!("Serialize error: {}", e))?;
     writeln!(file, "{}", line).map_err(|e| format!("Write error: {}", e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    fn t(ms: i64) -> chrono::DateTime<chrono::Local> {
+        chrono::Local::now() + Duration::milliseconds(ms)
+    }
+
+    #[test]
+    fn coalesce_drops_duplicate_inside_window() {
+        let prev = t(0);
+        let now = t(50);
+        assert!(should_coalesce(
+            Some("working"),
+            Some(prev),
+            "working",
+            now,
+            100
+        ));
+    }
+
+    #[test]
+    fn coalesce_allows_duplicate_outside_window() {
+        let prev = t(0);
+        let now = t(150);
+        assert!(!should_coalesce(
+            Some("working"),
+            Some(prev),
+            "working",
+            now,
+            100
+        ));
+    }
+
+    #[test]
+    fn coalesce_allows_different_event() {
+        let prev = t(0);
+        let now = t(10);
+        assert!(!should_coalesce(
+            Some("working"),
+            Some(prev),
+            "done",
+            now,
+            100
+        ));
+    }
+
+    #[test]
+    fn coalesce_disabled_with_zero_window() {
+        let prev = t(0);
+        let now = t(5);
+        assert!(!should_coalesce(
+            Some("working"),
+            Some(prev),
+            "working",
+            now,
+            0
+        ));
+    }
+
+    #[test]
+    fn coalesce_first_event_is_never_dropped() {
+        let now = t(0);
+        assert!(!should_coalesce(None, None, "working", now, 100));
+    }
 }

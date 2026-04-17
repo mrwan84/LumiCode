@@ -8,6 +8,7 @@ import type {
   LogEntry,
   AppConfig,
   HookStatus,
+  HookDiff,
   WebhookConfig,
   ColorConfig,
   Toast,
@@ -26,6 +27,8 @@ import SerialPorts from "./components/SerialPorts";
 import TestLed from "./components/TestLed";
 import EventLog from "./components/EventLog";
 import ToastContainer from "./components/Toast";
+import HookDiffModal from "./components/HookDiffModal";
+import OnboardingWizard from "./components/OnboardingWizard";
 
 function getResolvedTheme(pref: ThemePref): "dark" | "light" {
   if (pref === "system") {
@@ -64,6 +67,8 @@ function App() {
     board_names: {},
     sound_events: ["done"],
     hotkey: null,
+    coalesce_ms: 100,
+    update_check_repo: "",
   });
   const configRef = useRef(config);
   useEffect(() => {
@@ -75,7 +80,12 @@ function App() {
     hook_port: null,
     port_match: false,
   });
+  const [lastHookAt, setLastHookAt] = useState<number | null>(null);
   const [openSection, setOpenSection] = useState<string | null>("server");
+  const [pendingHookDiff, setPendingHookDiff] = useState<HookDiff | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(() => {
+    return localStorage.getItem("lumicode-onboarded") !== "true";
+  });
 
   const toggleSection = (id: string) => {
     setOpenSection((prev) => (prev === id ? null : id));
@@ -202,6 +212,7 @@ function App() {
       (e) => {
         addLog(e.payload.message, e.payload.event, true);
         setCurrentLedState(e.payload.event);
+        setLastHookAt(Date.now());
         resetIdleTimer();
         const cfg = configRef.current;
         if (cfg.sound_enabled && cfg.sound_events.includes(e.payload.event)) {
@@ -305,13 +316,55 @@ function App() {
 
   const handleInstallHooks = async () => {
     try {
-      const result = await invoke<string>("install_hooks");
-      addLog(result);
-      setHookStatus({ installed: true, hook_port: config.port, port_match: true });
-      showToast("Hooks installed!", "success");
+      const diff = await invoke<HookDiff>("preview_install_hooks");
+      setPendingHookDiff(diff);
     } catch (e) {
-      addLog(`Hook install failed: ${e}`);
-      showToast("Hook install failed", "error");
+      addLog(`Hook preview failed: ${e}`);
+      showToast("Hook preview failed", "error");
+    }
+  };
+
+  const handleUninstallHooks = async () => {
+    try {
+      const diff = await invoke<HookDiff>("preview_uninstall_hooks");
+      if (diff.removed.length === 0) {
+        showToast("No LumiCode hooks to remove", "success");
+        return;
+      }
+      setPendingHookDiff(diff);
+    } catch (e) {
+      addLog(`Hook preview failed: ${e}`);
+      showToast("Hook preview failed", "error");
+    }
+  };
+
+  const confirmHookChange = async () => {
+    if (!pendingHookDiff) return;
+    const action = pendingHookDiff.action;
+    setPendingHookDiff(null);
+    try {
+      if (action === "install") {
+        const result = await invoke<string>("install_hooks");
+        addLog(result);
+        setHookStatus({
+          installed: true,
+          hook_port: config.port,
+          port_match: true,
+        });
+        showToast("Hooks installed!", "success");
+      } else {
+        const result = await invoke<string>("uninstall_hooks");
+        addLog(result);
+        setHookStatus({
+          installed: false,
+          hook_port: null,
+          port_match: false,
+        });
+        showToast("Hooks uninstalled", "success");
+      }
+    } catch (e) {
+      addLog(`Hook ${action} failed: ${e}`);
+      showToast(`Hook ${action} failed`, "error");
     }
   };
 
@@ -438,11 +491,15 @@ function App() {
       parsed.board_names = parsed.board_names ?? {};
       parsed.sound_events = parsed.sound_events ?? ["done"];
       parsed.hotkey = parsed.hotkey ?? null;
+      parsed.coalesce_ms = parsed.coalesce_ms ?? 100;
+      parsed.update_check_repo = parsed.update_check_repo ?? "";
       // Validate fields and ranges
       if (typeof parsed.port !== "number" || parsed.port < 1024 || parsed.port > 65535)
         throw new Error("Invalid config: port must be 1024-65535");
       if (typeof parsed.idle_timeout_minutes !== "number" || parsed.idle_timeout_minutes < 0 || parsed.idle_timeout_minutes > 60)
         throw new Error("Invalid config: idle_timeout_minutes must be 0-60");
+      if (typeof parsed.coalesce_ms !== "number" || parsed.coalesce_ms < 0 || parsed.coalesce_ms > 5000)
+        throw new Error("Invalid config: coalesce_ms must be 0-5000");
       if (typeof parsed.custom_colors === "object") {
         for (const [key, c] of Object.entries(parsed.custom_colors)) {
           if (typeof c.r !== "number" || typeof c.g !== "number" || typeof c.b !== "number" ||
@@ -486,7 +543,7 @@ function App() {
       <TabBar page={page} setPage={setPage} />
 
       {page === "about" ? (
-        <AboutPage />
+        <AboutPage onReplayOnboarding={() => setShowOnboarding(true)} />
       ) : page === "settings" ? (
         <SettingsPage
           config={config}
@@ -495,7 +552,9 @@ function App() {
           toggleSection={toggleSection}
           serverPort={serverPort}
           hookStatus={hookStatus}
+          lastHookAt={lastHookAt}
           handleInstallHooks={handleInstallHooks}
+          handleUninstallHooks={handleUninstallHooks}
           getColorForEvent={getColorForEvent}
           updateEventColor={updateEventColor}
           resetEventColor={resetEventColor}
@@ -549,6 +608,37 @@ function App() {
       )}
 
       <ToastContainer toasts={toasts} />
+      {pendingHookDiff && (
+        <HookDiffModal
+          diff={pendingHookDiff}
+          onConfirm={confirmHookChange}
+          onCancel={() => setPendingHookDiff(null)}
+        />
+      )}
+      {showOnboarding && (
+        <OnboardingWizard
+          serverPort={serverPort}
+          hooksInstalled={hookStatus.installed && hookStatus.port_match}
+          connectedPorts={connectedPorts}
+          availablePorts={availablePorts}
+          onInstallHooks={handleInstallHooks}
+          onConnectPort={(p) => {
+            setSelectedPort(p);
+            invoke("set_serial_port", { port: p }).catch((e) =>
+              addLog(`Connection failed: ${e}`),
+            );
+          }}
+          onTestLed={() => sendCommand("done")}
+          onFinish={() => {
+            localStorage.setItem("lumicode-onboarded", "true");
+            setShowOnboarding(false);
+          }}
+          onSkip={() => {
+            localStorage.setItem("lumicode-onboarded", "true");
+            setShowOnboarding(false);
+          }}
+        />
+      )}
     </div>
   );
 }

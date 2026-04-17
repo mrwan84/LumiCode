@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type {
   AppConfig,
   ColorConfig,
@@ -7,6 +8,15 @@ import type {
 } from "../types";
 import { ALL_EVENTS, EVENT_LABELS, LED_BUTTONS } from "../constants";
 
+function formatAgo(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ago`;
+}
+
 interface Props {
   config: AppConfig;
   updateConfig: (partial: Partial<AppConfig>) => void;
@@ -14,7 +24,9 @@ interface Props {
   toggleSection: (id: string) => void;
   serverPort: number | null;
   hookStatus: HookStatus;
+  lastHookAt: number | null;
   handleInstallHooks: () => void;
+  handleUninstallHooks: () => void;
   getColorForEvent: (event: string) => ColorConfig;
   updateEventColor: (event: string, color: ColorConfig) => void;
   resetEventColor: (event: string) => void;
@@ -37,7 +49,9 @@ export default function SettingsPage({
   toggleSection,
   serverPort,
   hookStatus,
+  lastHookAt,
   handleInstallHooks,
+  handleUninstallHooks,
   getColorForEvent,
   updateEventColor,
   resetEventColor,
@@ -52,6 +66,13 @@ export default function SettingsPage({
   exportConfig,
   importConfig,
 }: Props) {
+  // Tick once a second so the "Ns ago" label stays fresh
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
   return (
     <div className="settings-page">
       {/* General */}
@@ -175,6 +196,50 @@ export default function SettingsPage({
               <div className="settings-cell">
                 <span className="settings-label">Hotkey</span>
                 <span className="settings-value-text">Ctrl+Shift+L</span>
+              </div>
+            </div>
+            {/* Row 5: Event coalescing + Update check repo */}
+            <div className="settings-row-dual">
+              <div className="settings-cell">
+                <span
+                  className="settings-label"
+                  title="Drop duplicate consecutive events fired within this window (0 = disabled). Prevents LED thrashing during rapid tool calls."
+                >
+                  Coalesce (ms)
+                </span>
+                <input
+                  type="number"
+                  className="settings-input"
+                  value={config.coalesce_ms}
+                  min={0}
+                  max={5000}
+                  step={50}
+                  onChange={(e) =>
+                    updateConfig({
+                      coalesce_ms: Math.max(
+                        0,
+                        Math.min(5000, parseInt(e.target.value) || 0),
+                      ),
+                    })
+                  }
+                />
+              </div>
+              <div className="settings-cell">
+                <span
+                  className="settings-label"
+                  title="GitHub 'owner/repo' to query for new releases. Leave empty to disable the update check."
+                >
+                  Update repo
+                </span>
+                <input
+                  type="text"
+                  className="settings-input"
+                  placeholder="owner/repo"
+                  value={config.update_check_repo}
+                  onChange={(e) =>
+                    updateConfig({ update_check_repo: e.target.value })
+                  }
+                />
               </div>
             </div>
             {config.port !== serverPort && serverPort && (
@@ -375,20 +440,41 @@ export default function SettingsPage({
                     : `Hooks on :${hookStatus.hook_port}, app on :${config.port}`
                   : "Not installed"}
               </span>
-              <button
-                className="btn btn-sm primary"
-                onClick={handleInstallHooks}
-              >
-                {hookStatus.installed ? "Reinstall" : "Install"}
-              </button>
+              <div style={{ display: "flex", gap: "0.4rem" }}>
+                <button
+                  className="btn btn-sm primary"
+                  onClick={handleInstallHooks}
+                >
+                  {hookStatus.installed ? "Reinstall" : "Install"}
+                </button>
+                {hookStatus.installed && (
+                  <button
+                    className="btn btn-sm"
+                    onClick={handleUninstallHooks}
+                    title="Remove LumiCode hooks from settings.json"
+                  >
+                    Uninstall
+                  </button>
+                )}
+              </div>
             </div>
+            {hookStatus.installed && (
+              <div className="settings-row">
+                <span className="settings-label">Last event</span>
+                <span className="settings-value-text">
+                  {lastHookAt
+                    ? formatAgo(now - lastHookAt)
+                    : "none this session"}
+                </span>
+              </div>
+            )}
             {hookStatus.installed && !hookStatus.port_match && (
               <div className="settings-hint" style={{ color: "var(--yellow)" }}>
                 Hooks point to a different port — click Reinstall to fix
               </div>
             )}
             <div className="settings-hint">
-              Writes hooks to ~/.claude/settings.json
+              Writes hooks to ~/.claude/settings.json (backed up before changes)
             </div>
           </div>
         )}

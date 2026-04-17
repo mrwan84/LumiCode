@@ -63,6 +63,20 @@ pub struct AppConfig {
     pub sound_events: Vec<String>,
     #[serde(default)]
     pub hotkey: Option<String>,
+    /// Suppress identical consecutive events fired within this many
+    /// milliseconds. 0 disables coalescing. Defaults to 100ms, which
+    /// absorbs bursts from rapid tool calls without losing meaningful
+    /// state transitions.
+    #[serde(default = "default_coalesce_ms")]
+    pub coalesce_ms: u64,
+    /// GitHub "owner/repo" to query for releases. Empty disables the
+    /// "Check for updates" button.
+    #[serde(default)]
+    pub update_check_repo: String,
+}
+
+fn default_coalesce_ms() -> u64 {
+    100
 }
 
 fn default_idle_timeout() -> u32 {
@@ -94,6 +108,8 @@ impl Default for AppConfig {
             board_names: HashMap::new(),
             sound_events: vec!["done".into()],
             hotkey: None,
+            coalesce_ms: 100,
+            update_check_repo: String::new(),
         }
     }
 }

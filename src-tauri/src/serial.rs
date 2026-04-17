@@ -208,7 +208,11 @@ impl SerialManager {
     }
 
     pub fn send_to(&mut self, port_name: &str, command: &str) -> Result<(), String> {
-        if let Some(conn) = self.connections.iter_mut().find(|c| c.port_name() == port_name) {
+        if let Some(conn) = self
+            .connections
+            .iter_mut()
+            .find(|c| c.port_name() == port_name)
+        {
             conn.send(command)
         } else {
             Err(format!("Not connected to {}", port_name))

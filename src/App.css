@@ -1236,3 +1236,203 @@ body {
   background: var(--accent-dim);
   box-shadow: 0 4px 16px var(--accent-glow);
 }
+
+/* ── Modal (hook diff preview) ─────────────────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+
+.modal {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem 1.5rem;
+  max-width: 420px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+.modal-title {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.1rem;
+  color: var(--fg);
+}
+
+.modal-body {
+  margin: 0 0 1rem 0;
+  color: var(--fg-dim);
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.diff-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0.75rem 0;
+}
+
+.diff-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.diff-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.diff-added { color: #4ade80; }
+.diff-removed { color: #f87171; }
+.diff-kept { color: #fbbf24; }
+
+.diff-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.85rem;
+  color: var(--fg);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.diff-list li {
+  padding: 0.1rem 0;
+}
+
+/* ── Onboarding wizard ─────────────────────────────────────────── */
+.modal.wizard {
+  max-width: 460px;
+}
+
+.wizard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.wizard-progress {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0.25rem 0 1rem 0;
+}
+
+.wizard-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+}
+.wizard-dot.active {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.wizard-dot.done {
+  background: #4ade80;
+}
+
+.wizard-step {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.wizard-step-title {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--fg);
+}
+
+.wizard-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--fg-dim);
+  font-size: 0.87rem;
+  line-height: 1.6;
+}
+
+.wizard-status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.88rem;
+  color: var(--fg);
+}
+
+.wizard-ok { color: #4ade80; font-size: 1.1rem; }
+.wizard-warn { color: #fbbf24; font-size: 1.1rem; }
+
+.wizard-port-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.wizard-actions {
+  gap: 0.4rem;
+}
+
+.about-replay {
+  margin: 1rem auto 0;
+  display: block;
+}
+
+/* ── About page: update check ───────────────────────────────────── */
+.about-updates {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1.25rem;
+}
+
+.about-update-msg {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--fg-dim);
+  text-align: center;
+  max-width: 280px;
+}
+
+.about-update-new {
+  color: #4ade80;
+  font-weight: 500;
+}
+
+.about-update-err {
+  color: #f87171;
+}
+
+.about-update-link {
+  color: var(--accent);
+  font-size: 0.85rem;
+  text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+  padding-bottom: 1px;
+}
+
+.about-update-link:hover {
+  border-bottom-style: solid;
+}

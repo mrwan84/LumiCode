@@ -234,6 +234,30 @@ Clicking the X button hides the window to tray. The app keeps running in the bac
 
 ## Version History
 
+### v1.8.0
+
+- **Event coalescing** — identical consecutive events fired within a configurable window (default 100ms) are dropped, preventing LED thrash, notification spam, and webhook flooding during rapid tool-call bursts. Tunable in Settings → General → Coalesce (ms); set to 0 to disable
+- **Check for updates** — About page has a "Check for updates" button that queries the configured GitHub Releases endpoint and reports current vs. latest version. On-demand only, no auto-download. Set "Update repo" (owner/repo form) in Settings → General to enable
+- **9 more tests** — 25 total, covering coalescing decisions and update-check version parsing
+
+### v1.7.0
+
+- **Dry-run diff preview** — Install and Uninstall now open a confirm modal that shows exactly which hook events will be added, replaced, or removed before `~/.claude/settings.json` is touched
+- **Rich webhook embeds** — Discord webhooks now send color-coded embeds (green for done, red for error, yellow for working, purple for thinking) with timestamp; Slack webhooks use attachments with colored side bars and Block Kit sections
+- **Onboarding wizard** — first launch shows a 4-step setup (welcome → server check → install hooks → connect Arduino & test). Re-runnable any time via the "Run setup again" button on the About page
+- **More tests** — 16 total unit tests (hooks diff logic + webhook payload shapes)
+
+### v1.6.0
+
+- **Sentinel-tagged hooks** — LumiCode hooks are now marked with a `#lumicode` tag in the command payload. The installer can reliably add, replace, and remove them without disturbing user-authored localhost hooks
+- **Uninstall button** — Settings → Claude Code Hooks now has an Uninstall button that removes only LumiCode hooks, leaving other hooks intact
+- **settings.json backups** — each install/uninstall creates a timestamped `settings.json.bak.YYYYMMDDHHMMSS`; the 5 most recent are retained
+- **Live hook status** — the Hooks section shows "Last event: Ns ago" so you can verify hooks are actually firing
+- **Robust port detection** — `check_hooks_status` now iterates the hooks array and matches on our tag instead of stringifying the whole blob and searching for "localhost", so other localhost hooks no longer confuse it
+- **Runtime version** — Header and About page now read the version from the Tauri binary (`get_version` command) instead of hardcoded strings that drift out of sync
+- **Unit tests** — 9 tests cover install/uninstall/reinstall, user-hook preservation, port extraction, and empty-event cleanup in `hooks.rs`
+- **CI** — GitHub Actions workflow runs frontend lint/typecheck/test/build and Rust fmt/clippy/test on every push and PR
+
 ### v1.5.1
 
 - **Cleaner hook install** — hook installer no longer writes `|| echo "ERROR: LumiCode is not running"` fallbacks into `~/.claude/settings.json`; hooks now fail silently when LumiCode isn't running

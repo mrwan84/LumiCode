@@ -2,6 +2,7 @@ mod config;
 mod hooks;
 mod serial;
 mod server;
+mod updates;
 mod webhooks;
 
 use config::{AppConfig, SharedConfig};
@@ -98,12 +99,49 @@ fn get_server_status(state: tauri::State<'_, server::SharedServerPort>) -> Optio
     *port
 }
 
+// ── App metadata ─────────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+async fn check_for_updates(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedConfig>,
+) -> Result<updates::UpdateCheckResult, String> {
+    let current = app.package_info().version.to_string();
+    let repo = state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .update_check_repo
+        .clone();
+    updates::check(&current, &repo).await
+}
+
 // ── Hook installer ───────────────────────────────────────────────────
 
 #[tauri::command]
 fn install_hooks(state: tauri::State<'_, SharedConfig>) -> Result<String, String> {
     let cfg = state.lock().unwrap_or_else(|e| e.into_inner());
     hooks::install_hooks(cfg.port)
+}
+
+#[tauri::command]
+fn uninstall_hooks() -> Result<String, String> {
+    hooks::uninstall_hooks()
+}
+
+#[tauri::command]
+fn preview_install_hooks(state: tauri::State<'_, SharedConfig>) -> Result<hooks::HookDiff, String> {
+    let cfg = state.lock().unwrap_or_else(|e| e.into_inner());
+    hooks::preview_install(cfg.port)
+}
+
+#[tauri::command]
+fn preview_uninstall_hooks() -> Result<hooks::HookDiff, String> {
+    hooks::preview_uninstall()
 }
 
 #[tauri::command]
@@ -206,7 +244,12 @@ pub fn run() {
             get_config,
             save_config,
             get_server_status,
+            get_version,
+            check_for_updates,
             install_hooks,
+            uninstall_hooks,
+            preview_install_hooks,
+            preview_uninstall_hooks,
             check_hooks_installed,
             check_hooks_status,
             test_webhook,
@@ -223,8 +266,7 @@ pub fn run() {
             // Build tray menu
             let about = MenuItem::with_id(app, "about", "About LumiCode", true, None::<&str>)?;
             let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
-            let settings =
-                MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit LumiCode", true, None::<&str>)?;
@@ -291,18 +333,21 @@ pub fn run() {
             // Register global hotkey (Ctrl+Shift+L)
             {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                let _ = app.global_shortcut().on_shortcut("CmdOrCtrl+Shift+L", move |app_handle, _shortcut, event| {
-                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            if window.is_visible().unwrap_or(false) {
-                                let _ = window.hide();
-                            } else {
-                                let _ = window.show();
-                                let _ = window.set_focus();
+                let _ = app.global_shortcut().on_shortcut(
+                    "CmdOrCtrl+Shift+L",
+                    move |app_handle, _shortcut, event| {
+                        if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                if window.is_visible().unwrap_or(false) {
+                                    let _ = window.hide();
+                                } else {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
                             }
                         }
-                    }
-                });
+                    },
+                );
             }
 
             // Start HTTP server with configured port
@@ -337,9 +382,7 @@ pub fn run() {
                         backoff_secs = 2; // Reset backoff when we have connections
                     } else {
                         drop(mgr); // Release lock during scan
-                        if let Some((port_name, port)) =
-                            serial::SerialConnection::auto_detect()
-                        {
+                        if let Some((port_name, port)) = serial::SerialConnection::auto_detect() {
                             let mut mgr = serial.lock().unwrap_or_else(|e| e.into_inner());
                             if !mgr.is_port_connected(&port_name) {
                                 mgr.adopt(port, port_name.clone());
